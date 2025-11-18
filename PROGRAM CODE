@@ -1,0 +1,531 @@
+Imports System.Media
+
+Public Class Form1
+
+    ' === Game Constants ===
+    Const BOARD_WIDTH As Integer = 10
+    Const BOARD_HEIGHT As Integer = 20
+    Const CELL_SIZE As Integer = 30
+    Const INITIAL_SPEED As Integer = 500 ' milliseconds
+
+    ' === Game Board ===
+    Dim board(BOARD_WIDTH - 1, BOARD_HEIGHT - 1) As Integer
+
+    ' === Current Tetromino ===
+    Dim currentShape As Tetromino = Nothing
+    Dim currentX As Integer
+    Dim currentY As Integer
+
+    ' === Next Tetromino (preview) ===
+    Dim nextShape As Tetromino = Nothing
+
+    ' === Score and Quiz ===
+    Dim score As Integer = 0
+    Dim nextQuizScore As Integer = 1000
+
+    ' === Random generator (shared) ===
+    Dim rnd As New Random()
+
+    ' === Difficulty Level ===
+    Dim level As Integer = 1
+    Const SCORE_PER_LEVEL As Integer = 1000
+
+    ' === Clearing animation state ===
+    Dim clearingRows As New List(Of Integer)()
+    Dim isFlashing As Boolean = False
+    Dim flashState As Boolean = False
+    Dim flashTimer As Timer = Nothing
+    Dim flashToggleCount As Integer = 0
+    Const FLASH_TIMES As Integer = 4
+    Const FLASH_INTERVAL As Integer = 120 ' ms
+    ReadOnly FLASH_CYCLES As Integer = FLASH_TIMES * 2
+
+    ' === Quiz data and helpers ===
+    Class QuizItem
+        Public Property Question As String
+        Public Property Answer As String
+        Public Sub New(q As String, a As String)
+            Question = q
+            Answer = a
+        End Sub
+    End Class
+
+    Dim quizItems As New List(Of QuizItem)()
+    Dim remainingQuizIndices As New List(Of Integer)()
+    Dim isAskingQuiz As Boolean = False
+
+
+
+    Private Sub InitQuestions()
+        quizItems.Clear()
+        ' Add your questions here:
+        quizItems.Add(New QuizItem("What is the capital of the Philippines?", "Manila"))
+        quizItems.Add(New QuizItem("What is 2 + 2?", "4"))
+        quizItems.Add(New QuizItem("Which planet is known as the Red Planet?", "Mars"))
+        quizItems.Add(New QuizItem("What is the chemical symbol for water?", "H2O"))
+        quizItems.Add(New QuizItem("What color do you get mixing red and white?", "Pink"))
+        quizItems.Add(New QuizItem("How many days are in a leap year?", "366"))
+        quizItems.Add(New QuizItem("What is the largest ocean on Earth?", "Pacific"))
+        quizItems.Add(New QuizItem("Who wrote 'Romeo and Juliet'?", "Shakespeare"))
+
+        ShuffleRemainingQuizIndices()
+    End Sub
+
+    Private Sub ShuffleRemainingQuizIndices()
+        remainingQuizIndices.Clear()
+        For i As Integer = 0 To quizItems.Count - 1
+            remainingQuizIndices.Add(i)
+        Next
+
+        ' Fisher–Yates shuffle
+        For i As Integer = remainingQuizIndices.Count - 1 To 1 Step -1
+            Dim j As Integer = rnd.Next(i + 1)
+            Dim tmp As Integer = remainingQuizIndices(i)
+            remainingQuizIndices(i) = remainingQuizIndices(j)
+            remainingQuizIndices(j) = tmp
+        Next
+    End Sub
+
+    ' === Tetromino class ===
+    Class Tetromino
+        Public Shape As Integer(,)
+        Public Color As Integer
+        Public Sub New(shape As Integer(,), color As Integer)
+            Me.Shape = shape
+            Me.Color = color
+        End Sub
+    End Class
+
+    ' === Tetromino definitions ===
+    Dim shapes As Tetromino() = {
+        New Tetromino({{1, 1, 1, 1}}, 1),             ' I
+        New Tetromino({{1, 1}, {1, 1}}, 2),           ' O
+        New Tetromino({{0, 1, 0}, {1, 1, 1}}, 3),     ' T
+        New Tetromino({{0, 1, 1}, {1, 1, 0}}, 4),     ' S
+        New Tetromino({{1, 1, 0}, {0, 1, 1}}, 5),     ' Z
+        New Tetromino({{1, 0, 0}, {1, 1, 1}}, 6),     ' J
+        New Tetromino({{0, 0, 1}, {1, 1, 1}}, 7)      ' L
+    }
+
+    ' === Form Load ===
+    Private Sub Form1_Load(sender As Object, e As EventArgs) Handles MyBase.Load
+        My.Computer.Audio.Play("C:\Users\Karl Lopez\source\repos\tetriss\tetriss\Resources\718651__gregorquendel__tetris-theme-korobeiniki-rearranged-arr.wav", AudioPlayMode.BackgroundLoop)
+        If picBoard Is Nothing Or lblScore Is Nothing Or picNext Is Nothing Then
+            MessageBox.Show("Missing required components.", "Error")
+            Return
+        End If
+
+        picBoard.Width = BOARD_WIDTH * CELL_SIZE
+        picBoard.Height = BOARD_HEIGHT * CELL_SIZE
+
+        picNext.Width = 4 * CELL_SIZE
+        picNext.Height = 4 * CELL_SIZE
+
+        lblScore.Text = "Score: 0"
+        Me.KeyPreview = True
+        fallTimer.Interval = INITIAL_SPEED
+
+        flashTimer = New Timer With {
+            .Interval = FLASH_INTERVAL
+        }
+        AddHandler flashTimer.Tick, AddressOf FlashTimer_Tick
+
+        InitQuestions()
+
+        ' === PLAY BACKGROUND MUSIC ===
+
+        'bgmPlayer.Load()
+        'bgmPlayer.PlayLooping()
+
+        NewGame()
+    End Sub
+
+    ' === New Game ===
+    Private Sub NewGame()
+        Array.Clear(board, 0, board.Length)
+        score = 0
+        nextQuizScore = 1000
+        lblScore.Text = "Score: 0"
+        clearingRows.Clear()
+        isFlashing = False
+        flashState = False
+        flashToggleCount = 0
+        isAskingQuiz = False
+
+        ShuffleRemainingQuizIndices()
+
+        nextShape = CloneTetromino(shapes(rnd.Next(shapes.Length)))
+        SpawnNewShape()
+
+        fallTimer.Start()
+        DrawBoard()
+    End Sub
+
+    ' === Clone Shape ===
+    Private Function CloneTetromino(src As Tetromino) As Tetromino
+        If src Is Nothing Then Return Nothing
+        Dim r As Integer = src.Shape.GetLength(0)
+        Dim c As Integer = src.Shape.GetLength(1)
+        Dim copy(r - 1, c - 1) As Integer
+        For i As Integer = 0 To r - 1
+            For j As Integer = 0 To c - 1
+                copy(i, j) = src.Shape(i, j)
+            Next
+        Next
+        Return New Tetromino(copy, src.Color)
+    End Function
+
+    ' === Spawn New Shape ===
+    Private Sub SpawnNewShape()
+        If nextShape Is Nothing Then
+            nextShape = CloneTetromino(shapes(rnd.Next(shapes.Length)))
+        End If
+        currentShape = CloneTetromino(nextShape)
+        nextShape = CloneTetromino(shapes(rnd.Next(shapes.Length)))
+
+        currentX = BOARD_WIDTH \ 2 - currentShape.Shape.GetLength(1) \ 2
+        currentY = 0
+
+        If Not CanPlace(currentShape.Shape, currentX, currentY) Then
+            fallTimer.Stop()
+            MessageBox.Show("Game Over! Score: " & score)
+            NewGame()
+        End If
+
+        DrawNextPreview()
+    End Sub
+
+    ' === Check Placement ===
+    Private Function CanPlace(shape As Integer(,), x As Integer, y As Integer) As Boolean
+        For i As Integer = 0 To shape.GetLength(0) - 1
+            For j As Integer = 0 To shape.GetLength(1) - 1
+                If shape(i, j) <> 0 Then
+                    Dim nx As Integer = x + j
+                    Dim ny As Integer = y + i
+                    If nx < 0 Or nx >= BOARD_WIDTH Or ny >= BOARD_HEIGHT Then Return False
+                    If ny >= 0 AndAlso board(nx, ny) <> 0 Then Return False
+                End If
+            Next
+        Next
+        Return True
+    End Function
+
+    ' === Place Shape ===
+    Private Sub PlaceShape(shape As Integer(,), x As Integer, y As Integer, color As Integer)
+        For i As Integer = 0 To shape.GetLength(0) - 1
+            For j As Integer = 0 To shape.GetLength(1) - 1
+                If shape(i, j) <> 0 Then
+                    Dim nx As Integer = x + j
+                    Dim ny As Integer = y + i
+                    If nx >= 0 AndAlso nx < BOARD_WIDTH AndAlso ny >= 0 AndAlso ny < BOARD_HEIGHT Then
+                        board(nx, ny) = color
+                    End If
+                End If
+            Next
+        Next
+    End Sub
+
+    ' === Rotate Shape ===
+    Private Sub RotateShape()
+        Dim oldShape = currentShape.Shape
+        Dim rows As Integer = oldShape.GetLength(0)
+        Dim cols As Integer = oldShape.GetLength(1)
+        Dim newShape(cols - 1, rows - 1) As Integer
+
+        For i As Integer = 0 To rows - 1
+            For j As Integer = 0 To cols - 1
+                newShape(j, rows - 1 - i) = oldShape(i, j)
+            Next
+        Next
+
+        If CanPlace(newShape, currentX, currentY) Then
+            currentShape.Shape = newShape
+        ElseIf CanPlace(newShape, currentX - 1, currentY) Then
+            currentX -= 1
+            currentShape.Shape = newShape
+        ElseIf CanPlace(newShape, currentX + 1, currentY) Then
+            currentX += 1
+            currentShape.Shape = newShape
+        End If
+    End Sub
+
+    ' === Move Shape ===
+    Private Sub MoveShape(dx As Integer, dy As Integer)
+        If CanPlace(currentShape.Shape, currentX + dx, currentY + dy) Then
+            currentX += dx
+            currentY += dy
+        ElseIf dy > 0 Then
+            PlaceShape(currentShape.Shape, currentX, currentY, currentShape.Color)
+            ClearLines()
+            SpawnNewShape()
+        End If
+    End Sub
+
+    ' === Update Difficulty ===
+    Private Sub UpdateDifficulty()
+        ' Calculate level from score (1-based). Change formula if you prefer different pacing.
+        Dim newLevel As Integer = Math.Max(1, score \ SCORE_PER_LEVEL + 1)
+
+        If newLevel <> level Then
+            level = newLevel
+
+            ' Simple linear speed increase: reduce interval as level rises.
+            ' Prevent the timer from becoming too fast by enforcing a minimum interval.
+            Dim minInterval As Integer = 80
+            Dim intervalDropPerLevel As Integer = 40
+            Dim newInterval As Integer = Math.Max(minInterval, INITIAL_SPEED - (level - 1) * intervalDropPerLevel)
+
+            Try
+                fallTimer.Interval = newInterval
+            Catch
+                ' fallTimer may be null during design-time; ignore
+            End Try
+
+            ' Optional: show level in debug output
+            System.Diagnostics.Debug.WriteLine("Difficulty updated: Level=" & level & " Interval=" & newInterval)
+        End If
+    End Sub
+
+    ' === Clear Lines ===
+    Private Sub ClearLines()
+        If isFlashing Then Return
+
+        Dim rowsToClear As New List(Of Integer)()
+
+        For y As Integer = BOARD_HEIGHT - 1 To 0 Step -1
+            Dim full As Boolean = True
+            For x As Integer = 0 To BOARD_WIDTH - 1
+                If board(x, y) = 0 Then
+                    full = False
+                    Exit For
+                End If
+            Next
+            If full Then rowsToClear.Add(y)
+        Next
+
+        If rowsToClear.Count > 0 Then
+            StartClearAnimation(rowsToClear)
+        End If
+    End Sub
+
+    ' === Start Flash Animation ===
+    Private Sub StartClearAnimation(rows As List(Of Integer))
+        clearingRows.Clear()
+        clearingRows.AddRange(rows)
+        isFlashing = True
+        flashState = False
+        flashToggleCount = 0
+        fallTimer.Stop()
+        flashTimer.Start()
+        DrawBoard()
+    End Sub
+
+    ' === Flash Timer ===
+    Private Sub FlashTimer_Tick(sender As Object, e As EventArgs)
+        flashState = Not flashState
+        flashToggleCount += 1
+        DrawBoard()
+
+        If flashToggleCount >= FLASH_CYCLES Then
+            flashTimer.Stop()
+            PerformClearLines()
+        End If
+    End Sub
+
+    ' === Perform Row Clear ===
+    Private Sub PerformClearLines()
+        ' === PLAY CLEAR SOUND ===
+        'clearSFX.Load()
+        'clearSFX.Play()
+
+        clearingRows.Sort()
+        clearingRows.Reverse()
+
+        For Each y In clearingRows
+            For yy As Integer = y To 1 Step -1
+                For x As Integer = 0 To BOARD_WIDTH - 1
+                    board(x, yy) = board(x, yy - 1)
+                Next
+            Next
+            For x As Integer = 0 To BOARD_WIDTH - 1
+                board(x, 0) = 0
+            Next
+            AddScore(100)
+        Next
+
+        clearingRows.Clear()
+        isFlashing = False
+        flashState = False
+        flashToggleCount = 0
+        fallTimer.Start()
+        DrawBoard()
+    End Sub
+
+    ' === Add Score ===
+    Private Sub AddScore(points As Integer)
+        score += points
+        If score < 0 Then score = 0
+
+        ' Update difficulty whenever score changes
+        UpdateDifficulty()
+
+        ' Show score and current level
+        Try
+            lblScore.Text = "Score: " & score & "  Level: " & level
+        Catch
+        End Try
+
+        ' Only trigger a quiz if one isn't already active
+        If score >= nextQuizScore AndAlso Not isAskingQuiz Then
+            AskQuestion()
+            nextQuizScore += 1000
+        End If
+    End Sub
+
+    ' === Ask Question Pop-up ===
+    Private Sub AskQuestion()
+        If isAskingQuiz Then Return
+        isAskingQuiz = True
+        fallTimer.Stop()
+
+        If remainingQuizIndices.Count = 0 Then
+            ShuffleRemainingQuizIndices()
+        End If
+
+        Dim idx As Integer = remainingQuizIndices.Last()
+        remainingQuizIndices.RemoveAt(remainingQuizIndices.Count - 1)
+
+        Dim qItem As QuizItem = quizItems(idx)
+        Dim answer As String = InputBox(qItem.Question, "Tetris Quiz")
+
+        If String.Equals(answer.Trim(), qItem.Answer, StringComparison.InvariantCultureIgnoreCase) Then
+            MessageBox.Show("Correct!")
+        Else
+            MessageBox.Show("Wrong! -200 points.")
+            AddScore(-200)
+        End If
+
+        fallTimer.Start()
+        isAskingQuiz = False
+    End Sub
+
+    ' === Draw Board ===
+    Private Sub DrawBoard()
+        If picBoard.Width <= 0 Or picBoard.Height <= 0 Then Return
+
+        Dim bmp As New Bitmap(picBoard.Width, picBoard.Height)
+
+        Using g As Graphics = Graphics.FromImage(bmp)
+            g.Clear(Color.Black)
+
+            For x As Integer = 0 To BOARD_WIDTH - 1
+                For y As Integer = 0 To BOARD_HEIGHT - 1
+                    If board(x, y) <> 0 Then
+                        Dim isClearingRow As Boolean = isFlashing AndAlso clearingRows.Contains(y)
+                        If isClearingRow AndAlso flashState Then
+                            g.FillRectangle(New SolidBrush(Color.White), x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                            g.DrawRectangle(Pens.White, x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                        Else
+                            Dim c As Color = GetColor(board(x, y))
+                            g.FillRectangle(New SolidBrush(c), x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                            g.DrawRectangle(Pens.White, x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                        End If
+                    End If
+                Next
+            Next
+
+            If currentShape IsNot Nothing Then
+                For i As Integer = 0 To currentShape.Shape.GetLength(0) - 1
+                    For j As Integer = 0 To currentShape.Shape.GetLength(1) - 1
+                        If currentShape.Shape(i, j) <> 0 Then
+                            Dim nx As Integer = currentX + j
+                            Dim ny As Integer = currentY + i
+                            If nx >= 0 AndAlso nx < BOARD_WIDTH AndAlso ny >= 0 AndAlso ny < BOARD_HEIGHT Then
+                                Dim c As Color = GetColor(currentShape.Color)
+                                g.FillRectangle(New SolidBrush(c), nx * CELL_SIZE, ny * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                                g.DrawRectangle(Pens.White, nx * CELL_SIZE, ny * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+                            End If
+                        End If
+                    Next
+                Next
+            End If
+        End Using
+
+        picBoard.Image = bmp
+        DrawNextPreview()
+    End Sub
+
+    ' === Draw Next Preview ===
+    Private Sub DrawNextPreview()
+        If nextShape Is Nothing Then Return
+
+        Dim bmp As New Bitmap(picNext.Width, picNext.Height)
+        bmp.MakeTransparent()
+
+        Using g As Graphics = Graphics.FromImage(bmp)
+            g.Clear(Color.Transparent)
+
+            Dim shape = nextShape.Shape
+            Dim rows = shape.GetLength(0)
+            Dim cols = shape.GetLength(1)
+
+            Dim startRow = (4 - rows) \ 2
+            Dim startCol = (4 - cols) \ 2
+
+            For i As Integer = 0 To rows - 1
+                For j As Integer = 0 To cols - 1
+                    If shape(i, j) <> 0 Then
+                        Dim c As Color = GetColor(nextShape.Color)
+                        Dim drawX = (startCol + j) * CELL_SIZE
+                        Dim drawY = (startRow + i) * CELL_SIZE
+
+                        Using b As New SolidBrush(c)
+                            g.FillRectangle(b, drawX, drawY, CELL_SIZE, CELL_SIZE)
+                        End Using
+
+                        g.DrawRectangle(Pens.White, drawX, drawY, CELL_SIZE, CELL_SIZE)
+                    End If
+                Next
+            Next
+        End Using
+
+        picNext.Image = bmp
+    End Sub
+
+
+    ' === Color Mapping ===
+    Private Function GetColor(id As Integer) As Color
+        Select Case id
+            Case 1 : Return Color.Cyan
+            Case 2 : Return Color.Yellow
+            Case 3 : Return Color.Purple
+            Case 4 : Return Color.Green
+            Case 5 : Return Color.Red
+            Case 6 : Return Color.Blue
+            Case 7 : Return Color.Orange
+        End Select
+        Return Color.Black
+    End Function
+
+    ' === Timer Tick ===
+    Private Sub FallTimer_Tick(sender As Object, e As EventArgs) Handles fallTimer.Tick
+        MoveShape(0, 1)
+        DrawBoard()
+    End Sub
+
+    ' === Keyboard Controls ===
+    Private Sub Form1_KeyDown(sender As Object, e As KeyEventArgs) Handles MyBase.KeyDown
+        Select Case e.KeyCode
+            Case Keys.Left : MoveShape(-1, 0)
+            Case Keys.Right : MoveShape(1, 0)
+            Case Keys.Down : MoveShape(0, 1)
+            Case Keys.Up : RotateShape()
+            Case Keys.Space
+                While CanPlace(currentShape.Shape, currentX, currentY + 1)
+                    currentY += 1
+                End While
+                MoveShape(0, 1)
+        End Select
+
+        DrawBoard()
+    End Sub
