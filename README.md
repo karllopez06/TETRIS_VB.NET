@@ -1,2 +1,2 @@
 # TETRIS_VB.NET
-niegga
+Simple Tetris Game made in Visual Basic
