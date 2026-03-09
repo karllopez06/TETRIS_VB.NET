@@ -1,3 +1,5 @@
+![Tetris Trivia](Screenshot 2026-03-09 190427.png)  
+
 # 🎮 Tetris Trivia — VB.NET
 
 A classic Tetris clone with a twist, developed in VB.NET as a first-year programming project.
